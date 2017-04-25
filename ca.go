@@ -2,15 +2,16 @@ package ca
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log"
 	"math/big"
 	"strings"
@@ -26,8 +27,8 @@ const (
 )
 
 const (
-	pemStart = "----BEGIN "
-	pemEnd   = "----END "
+	pemBegin = "-----BEGIN "
+	pemEnd   = "-----END "
 )
 
 func publicKey(priv interface{}) interface{} {
@@ -103,147 +104,171 @@ func newRootCertFromKey(name pkix.Name, notBefore time.Time,
 	return derBytes, nil
 }
 
+func buildCert(crt *x509.Certificate, k crypto.PrivateKey) *tls.Certificate {
+	var ca tls.Certificate
+	ca.Certificate = append(ca.Certificate, crt.Raw)
+	ca.PrivateKey = k
+	ca.Leaf = crt
+	return &ca
+}
+
 // NewECRootCA creates a Eliptic Curve Self-Signed (Root) Certificate Authority
 func NewECRootCA(name pkix.Name, duration time.Duration, ecdsaCurve string) (
-	*x509.Certificate, *ecdsa.PrivateKey, error) {
+	*tls.Certificate, error) {
 	k, err := generateECKey(ecdsaCurve)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"failed to generate EC private key: %s", err)
+		return nil, fmt.Errorf("ca: failed to generate EC key: %s", err)
 	}
 	derBytes, err := newRootCertFromKey(name, time.Now(), duration, k)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	ca, err := x509.ParseCertificate(derBytes)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return ca, k, err
+	return buildCert(ca, k), nil
 }
 
 // NewRSARootCA creates a RSA Self-Signed (Root) Certificate Authority
 func NewRSARootCA(name pkix.Name, duration time.Duration, rsaBits int) (
-	*x509.Certificate, *rsa.PrivateKey, error) {
+	*tls.Certificate, error) {
 	k, err := rsa.GenerateKey(rand.Reader, rsaBits)
 	if err != nil {
-		return nil, nil, fmt.Errorf(
-			"failed to generate RSA private key: %s", err)
+		return nil, fmt.Errorf("ca: failed to generate RSA key: %s", err)
 	}
 	derBytes, err := newRootCertFromKey(name, time.Now(), duration, k)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	ca, err := x509.ParseCertificate(derBytes)
 	if err != nil {
-		return nil, nil, err
-	}
-	return ca, k, err
-}
-
-// EncodePEMCert writes a certificate as a PEM block to out
-func EncodePEMCert(out io.Writer, cert *x509.Certificate) error {
-	return pem.Encode(out, &pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
-}
-
-// EncodePEMKey writes private key priv as a plain text PEM block to out
-func EncodePEMKey(out io.Writer, priv interface{}) error {
-	pemBlock, err := pemBlockForKey(priv)
-	if err != nil {
-		return err
-	}
-	return pem.Encode(out, pemBlock)
-}
-
-// EncryptPEMKey writes private key priv as an encrypted PEM block to out
-func EncryptPEMKey(out io.Writer, priv interface{},
-	password []byte, cipher x509.PEMCipher) error {
-	pemBlock, err := pemBlockForKey(priv)
-	if err != nil {
-		return err
-	}
-	encryptedPemBlock, err := x509.EncryptPEMBlock(
-		rand.Reader, pemBlock.Type, pemBlock.Bytes, password, cipher)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt PEMBlock %v: %v", pemBlock, err)
-	}
-	return pem.Encode(out, encryptedPemBlock)
-}
-
-func readline(in io.Reader) ([]byte, error) {
-	line := bytes.NewBuffer(nil)
-	buf := make([]byte, 1)
-	n, err := in.Read(buf)
-	for n > 0 && err != nil {
-		line.Write(buf)
-		if buf[0] == '\n' {
-			return line.Bytes(), nil
-		}
-		n, err = in.Read(buf)
-	}
-	if err != nil && err != io.EOF {
-		return nil, nil
-	}
-	return line.Bytes(), nil
-}
-
-// NextPEM reads in until it gets the next full PEM block string.
-//
-// Returns the next PEM block string from in or an error
-func NextPEM(in io.Reader, pass []byte) (string, error) {
-	pem := bytes.NewBufferString("")
-	line, err := readline(in)
-	if err != nil {
-		return "", err
-	}
-	if !bytes.HasPrefix(line, []byte(pemStart)) {
-		return "", fmt.Errorf("Malformed PEM begin line: %s", line)
-	}
-	_, err = pem.Write(line)
-	for err != nil {
-		if bytes.HasPrefix(line, []byte(pemEnd)) {
-			return pem.String(), nil
-		}
-		line, err = readline(in)
-		if err != nil {
-			return "", err
-		}
-		_, err = pem.Write(line)
-	}
-	if err != nil {
-		return "", err
-	}
-	return pem.String(), nil
-}
-
-// DecodePEMCert converts a certificate PEM string to a Certificate.
-//
-// Returns the certificate or an error
-func DecodePEMCert(certPem string) (*x509.Certificate, error) {
-	pemBlock, _ := pem.Decode([]byte(certPem))
-	cert, err := x509.ParseCertificate(pemBlock.Bytes)
-	if err != nil {
 		return nil, err
 	}
-	return cert, nil
+	return buildCert(ca, k), nil
 }
 
-// DecodePEMKey converts a key PEM string to a PrivateKey.
+// UnsafePEMBytes turns a certificate into an unsafe PEM block of bytes
 //
-// Returns the DER bytes of the key PEM string or an error
-func DecodePEMKey(keyPem string, pass []byte) (interface{}, error) {
-	pemBlock, _ := pem.Decode([]byte(keyPem))
-	if pass != nil && x509.IsEncryptedPEMBlock(pemBlock) {
-		bytes, err := x509.DecryptPEMBlock(pemBlock, pass)
+// The PEM result is "unsafe" cause the private key is not encrypted.
+// DO NOT use this in production, it's for testing or in-memory use only.
+//
+// The output is a sequence of one or more PEM blocks:
+//
+// It will include the leaf certificate at the very least.
+//
+// If cert.PrivateKey is present, the second PEM block will be the private key
+// in plain text form.
+//
+// Finally, if more certificates are present in the cert.Certificate chain,
+// they are appended as pem blocks in the same order the appear in
+// cert.Certificate.
+func UnsafePEMBytes(cert *tls.Certificate) ([]byte, error) {
+	return PEMBytes(cert, nil, x509.PEMCipherAES256)
+}
+
+// PEMBytes turns a certificate into PEM blocks of bytes, with encryption.
+//
+// The PEM result is a sequence of one or more PEM blocks, ONLY the PrivateKey
+// will be encrypted, certificates are always in plain text:
+//
+// It will include the leaf certificate at the very least.
+//
+// If cert.PrivateKey is present, the second PEM block will be the private key
+// encrypted with the given password and cipher. The PrivateKey will be left
+// unencrypted if the password passed is nil.
+//
+// Finally, if more certificates are present in the cert.Certificate chain,
+// they are appended as pem blocks in the same order the appear in
+// cert.Certificate.
+func PEMBytes(cert *tls.Certificate,
+	password []byte, cipher x509.PEMCipher) ([]byte, error) {
+	if cert == nil {
+		return nil, fmt.Errorf("ca: can't convert a nil Certificate")
+	}
+	if len(cert.Certificate) < 1 {
+		return nil, fmt.Errorf("ca: no certificates in the chain")
+	}
+	out := bytes.NewBufferString("")
+	err := pem.Encode(out,
+		&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	if err != nil {
+		return nil, fmt.Errorf("ca: can't encode leaf certificate: %v", err)
+	}
+	if cert.PrivateKey != nil {
+		pemBlock, err := pemBlockForKey(cert.PrivateKey)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("ca: can't parse private key: %v", err)
 		}
-		pemBlock.Bytes = bytes
+		if password != nil {
+			encryptedPemBlock, err := x509.EncryptPEMBlock(
+				rand.Reader, pemBlock.Type, pemBlock.Bytes, password, cipher)
+			if err != nil {
+				return nil, fmt.Errorf("ca: can't encrypt private key: %v", err)
+			}
+			pemBlock = encryptedPemBlock
+		}
+		err = pem.Encode(out, pemBlock)
+		if err != nil {
+			return nil, fmt.Errorf("ca: can't encode private key: %v", err)
+		}
 	}
-	if strings.HasPrefix(pemBlock.Type, "RSA ") {
-		return x509.ParsePKCS1PrivateKey(pemBlock.Bytes)
-	} else if strings.HasPrefix(pemBlock.Type, "EC ") {
-		return x509.ParseECPrivateKey(pemBlock.Bytes)
+	for i, crt := range cert.Certificate[1:] {
+		err := pem.Encode(out, &pem.Block{Type: "CERTIFICATE", Bytes: crt})
+		if err != nil {
+			return nil, fmt.Errorf("ca: can't encode certificate[%d]: %v",
+				i+1, err)
+		}
 	}
-	return x509.ParsePKCS8PrivateKey(pemBlock.Bytes)
+	return out.Bytes(), nil
+}
+
+// ReadCertificate returns a Certificate from its PEM representation.
+//
+// It expects to find the one or more certificates and at most one private key.
+// The first certificate is always the leaf.
+//
+// If the PrivateKey PEM block is encrypted and a password is given, it will
+// try to decrypt it.
+func ReadCertificate(pemBytes, password []byte) (*tls.Certificate, error) {
+	var cert tls.Certificate
+	var pemBlock *pem.Block
+	remaining := pemBytes
+	for {
+		pemBlock, remaining = pem.Decode(remaining)
+		if pemBlock == nil {
+			break
+		}
+		if pemBlock.Type == "CERTIFICATE" {
+			cert.Certificate = append(cert.Certificate, pemBlock.Bytes)
+		} else {
+			if x509.IsEncryptedPEMBlock(pemBlock) {
+				return nil, fmt.Errorf(
+					"ca: can't decrypt PEM, use DecryptCertificate() instead")
+			}
+			var err error
+			if strings.HasPrefix(pemBlock.Type, "RSA ") {
+				cert.PrivateKey, err = x509.ParsePKCS1PrivateKey(pemBlock.Bytes)
+			} else if strings.HasPrefix(pemBlock.Type, "EC ") {
+				cert.PrivateKey, err = x509.ParseECPrivateKey(pemBlock.Bytes)
+			} else {
+				err = fmt.Errorf(
+					"ca: unsupported PRM block type %v", pemBlock.Type)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("ca: can't decode PrivetaKey: %v", err)
+			}
+		}
+	}
+	if len(cert.Certificate) == 0 {
+		return nil, fmt.Errorf("ca: no certificates found")
+	}
+	// parse and add the leaf cert
+	var err error
+	cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf(
+			"ca: can't parse leaf certificate: %v", err)
+	}
+	return &cert, nil
 }

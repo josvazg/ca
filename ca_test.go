@@ -1,7 +1,7 @@
 package ca
 
 import (
-	"bytes"
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
@@ -40,40 +40,53 @@ func verifyRootCA(t *testing.T, ca *x509.Certificate) {
 }
 
 func TestNewRSARootCA(t *testing.T) {
-	ca, k, err := NewRSARootCA(name, 365*Day, 2048)
+	ca, err := NewRSARootCA(name, 365*Day, 2048)
 	dieOnError(t, err)
-	verifyRootCA(t, ca)
+	verifyRootCA(t, ca.Leaf)
 	// validate key
-	dieOnError(t, k.Validate())
+	pk := (ca.PrivateKey).(*rsa.PrivateKey)
+	dieOnError(t, pk.Validate())
 }
 
 func TestNewECRootCA(t *testing.T) {
-	ca, _, err := NewECRootCA(name, 365*Day, "P521")
+	ca, err := NewECRootCA(name, 365*Day, "P521")
 	dieOnError(t, err)
-	verifyRootCA(t, ca)
+	verifyRootCA(t, ca.Leaf)
 }
 
-func TestPEMEncondings(t *testing.T) {
-	ca, k, err := NewECRootCA(name, 365*Day, "P521")
+func TestUnsafePEM(t *testing.T) {
+	ca, err := NewECRootCA(name, 365*Day, "P521")
 	dieOnError(t, err)
-	// encode/decode cert test
-	caPem := bytes.NewBufferString("")
-	dieOnError(t, EncodePEMCert(caPem, ca))
-	ca2, err := DecodePEMCert(caPem.String())
+	if len(ca.Certificate) != 1 {
+		t.Fatalf("Expected 1 cert at ca.Certificates but got %d",
+			len(ca.Certificate))
+	}
+	pems, err := UnsafePEMBytes(ca)
 	dieOnError(t, err)
-	dieOnError(t, assertSame(ca.Raw, ca2.Raw))
-	// encode/decode plain text key
-	keyPem := bytes.NewBufferString("")
-	dieOnError(t, EncodePEMKey(keyPem, k))
-	_, err = DecodePEMKey(keyPem.String(), nil)
+	ca2, err := ReadCertificate(pems, nil)
 	dieOnError(t, err)
-	//endoce/decode empcrypted key
-	encryptedKeyPem := bytes.NewBufferString("")
-	pass := []byte("somepassword")
-	dieOnError(t, EncryptPEMKey(encryptedKeyPem, k, pass, x509.PEMCipherAES256))
-	_, err = DecodePEMKey(keyPem.String(), pass)
-	dieOnError(t, err)
+	dieOnError(t, assertSame(ca.Certificate[0], ca2.Certificate[0]))
+	if len(ca.Certificate) != len(ca2.Certificate) {
+		t.Fatalf("Expected 1 cert at ca2.Certificates but got %d",
+			len(ca2.Certificate))
+	}
 }
 
-func TestNextPEM(t *testing.T) {
+func TestPEM(t *testing.T) {
+	ca, err := NewRSARootCA(name, 365*Day, 2048)
+	dieOnError(t, err)
+	if len(ca.Certificate) != 1 {
+		t.Fatalf("Expected 1 cert at ca.Certificates but got %d",
+			len(ca.Certificate))
+	}
+	pass := ([]byte)("somepassword")
+	pems, err := PEMBytes(ca, pass, x509.PEMCipherAES256)
+	dieOnError(t, err)
+	ca2, err := ReadCertificate(pems, nil)
+	dieOnError(t, err)
+	dieOnError(t, assertSame(ca.Certificate[0], ca2.Certificate[0]))
+	if len(ca.Certificate) != len(ca2.Certificate) {
+		t.Fatalf("Expected 1 cert at ca2.Certificates but got %d",
+			len(ca2.Certificate))
+	}
 }
