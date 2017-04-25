@@ -82,7 +82,7 @@ func TestPEM(t *testing.T) {
 	pass := ([]byte)("somepassword")
 	pems, err := PEMBytes(ca, pass, x509.PEMCipherAES256)
 	dieOnError(t, err)
-	ca2, err := ReadCertificate(pems, nil)
+	ca2, err := ReadCertificate(pems, pass)
 	dieOnError(t, err)
 	dieOnError(t, assertSame(ca.Certificate[0], ca2.Certificate[0]))
 	if len(ca.Certificate) != len(ca2.Certificate) {

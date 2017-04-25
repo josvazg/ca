@@ -242,15 +242,24 @@ func ReadCertificate(pemBytes, password []byte) (*tls.Certificate, error) {
 		if pemBlock.Type == "CERTIFICATE" {
 			cert.Certificate = append(cert.Certificate, pemBlock.Bytes)
 		} else {
+			derBytes := pemBlock.Bytes
 			if x509.IsEncryptedPEMBlock(pemBlock) {
-				return nil, fmt.Errorf(
-					"ca: can't decrypt PEM, use DecryptCertificate() instead")
+				if password == nil {
+					return nil, fmt.Errorf(
+						"ca: can't decrypt PEM without a password")
+				}
+				der, err := x509.DecryptPEMBlock(pemBlock, password)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"ca: failed to decrypt PEM: %v", err)
+				}
+				derBytes = der
 			}
 			var err error
 			if strings.HasPrefix(pemBlock.Type, "RSA ") {
-				cert.PrivateKey, err = x509.ParsePKCS1PrivateKey(pemBlock.Bytes)
+				cert.PrivateKey, err = x509.ParsePKCS1PrivateKey(derBytes)
 			} else if strings.HasPrefix(pemBlock.Type, "EC ") {
-				cert.PrivateKey, err = x509.ParseECPrivateKey(pemBlock.Bytes)
+				cert.PrivateKey, err = x509.ParseECPrivateKey(derBytes)
 			} else {
 				err = fmt.Errorf(
 					"ca: unsupported PRM block type %v", pemBlock.Type)
